@@ -1,0 +1,356 @@
+import sys
+import os
+import json
+from PyQt5.QtWidgets import (
+    QApplication,
+    QMainWindow,
+    QVBoxLayout,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QListWidget,
+    QListWidgetItem,
+    QTextEdit,
+    QMenu,
+    QMessageBox,
+    QWidget,
+    QFileDialog,
+    QInputDialog,
+    QDialog,
+    QGroupBox,
+    QRadioButton,
+    QDialogButtonBox,
+)
+from PyQt5.QtCore import Qt, QDir
+
+TEMPLATE_DIR = "templates"
+DOWNLOAD_DIR = os.path.join(QDir.homePath(), "Downloads")
+
+
+class TemplateManager(QMainWindow):
+    def __init__(self):
+        super().__init__()
+        self.setWindowTitle("Template Manager")
+        self.setGeometry(100, 100, 600, 400)
+
+        # Main widget and layout
+        self.main_widget = QWidget()
+        self.setCentralWidget(self.main_widget)
+        self.layout = QVBoxLayout(self.main_widget)
+
+        # Template List
+        self.template_list = QListWidget()
+        self.template_list.itemDoubleClicked.connect(self.enable_inline_rename)
+        self.template_list.itemChanged.connect(self.save_renamed_template)
+        self.layout.addWidget(self.template_list)
+
+        # Buttons
+        self.button_layout = QHBoxLayout()
+        self.create_template_button = QPushButton("Create Template")
+        self.delete_template_button = QPushButton("Delete Template")
+        self.open_template_button = QPushButton("Open Template")
+        self.button_layout.addWidget(self.create_template_button)
+        self.button_layout.addWidget(self.delete_template_button)
+        self.button_layout.addWidget(self.open_template_button)
+        self.layout.addLayout(self.button_layout)
+
+        # Connect button actions
+        self.create_template_button.clicked.connect(self.create_template)
+        self.delete_template_button.clicked.connect(self.delete_template)
+        self.open_template_button.clicked.connect(self.open_template)
+
+        # Template storage
+        self.templates = {}
+        self.load_templates()
+
+    def load_templates(self):
+        """Load templates from the 'templates' directory."""
+        if not os.path.exists(TEMPLATE_DIR):
+            os.makedirs(TEMPLATE_DIR)
+        self.templates = {}
+        self.template_list.clear()
+        for file_name in os.listdir(TEMPLATE_DIR):
+            if file_name.endswith(".json"):
+                template_name = file_name.replace(".json", "")
+                with open(os.path.join(TEMPLATE_DIR, file_name), "r") as f:
+                    self.templates[template_name] = json.load(f)
+                self.add_template_to_list(template_name)
+
+    def add_template_to_list(self, template_name):
+        """Add a template to the QListWidget."""
+        item = QListWidgetItem(template_name)
+        item.setFlags(item.flags() | Qt.ItemIsEditable)
+        self.template_list.addItem(item)
+
+    def create_template(self):
+        """Create a new template."""
+        template_name, ok = QInputDialog.getText(self, "Create Template", "Enter template name:")
+        if ok and template_name.strip():
+            if template_name in self.templates:
+                QMessageBox.warning(self, "Error", "Template already exists!")
+            else:
+                self.templates[template_name] = {}
+                with open(os.path.join(TEMPLATE_DIR, f"{template_name}.json"), "w") as f:
+                    json.dump(self.templates[template_name], f)
+                self.add_template_to_list(template_name)
+
+    def enable_inline_rename(self, item):
+        """Enable renaming for a template."""
+        self.template_list.editItem(item)
+
+    def save_renamed_template(self, item):
+        """Save the renamed template."""
+        old_name = item.text()
+        if old_name in self.templates:
+            return
+
+        new_name = item.text()
+        if new_name in self.templates:
+            QMessageBox.warning(self, "Error", "Template name already exists!")
+            return
+
+        old_file = os.path.join(TEMPLATE_DIR, f"{old_name}.json")
+        new_file = os.path.join(TEMPLATE_DIR, f"{new_name}.json")
+        os.rename(old_file, new_file)
+        self.templates[new_name] = self.templates.pop(old_name)
+
+    def delete_template(self):
+        """Delete a selected template."""
+        selected_item = self.template_list.currentItem()
+        if not selected_item:
+            QMessageBox.warning(self, "Error", "Please select a template to delete!")
+            return
+
+        template_name = selected_item.text()
+        confirm = QMessageBox.question(
+            self, "Delete Template", f"Are you sure you want to delete '{template_name}'?"
+        )
+        if confirm == QMessageBox.Yes:
+            os.remove(os.path.join(TEMPLATE_DIR, f"{template_name}.json"))
+            del self.templates[template_name]
+            self.template_list.takeItem(self.template_list.row(selected_item))
+
+    def open_template(self):
+        """Open the selected template."""
+        selected_item = self.template_list.currentItem()
+        if not selected_item:
+            QMessageBox.warning(self, "Error", "Please select a template to open!")
+            return
+
+        template_name = selected_item.text()
+        folder_structure = self.templates[template_name]
+        self.folder_manager = FolderManager(template_name, folder_structure, self.templates, self)
+        self.folder_manager.show()
+        self.hide()
+
+
+class FolderManager(QMainWindow):
+    def __init__(self, template_name, folder_structure, templates, parent_window):
+        super().__init__()
+        self.setWindowTitle(f"Manage Folders - {template_name}")
+        self.setGeometry(100, 100, 800, 600)
+
+        # Main widget and layout
+        self.main_widget = QWidget()
+        self.setCentralWidget(self.main_widget)
+        self.layout = QVBoxLayout(self.main_widget)
+
+        # Add Template Manager Button
+        self.template_manager_button = QPushButton("Template Manager")
+        self.template_manager_button.clicked.connect(lambda: self.return_to_templates(parent_window))
+        self.layout.addWidget(self.template_manager_button)
+
+        # Input Box for Folder Names
+        self.input_box_label = QLabel("Paste Folder Names (one per line):")
+        self.input_box = QTextEdit()
+        self.input_box.setPlaceholderText("Enter folder names here...")
+        self.input_box.setMaximumHeight(100)
+        self.input_box.returnPressed = self.create_folders_from_input
+        self.layout.addWidget(self.input_box_label)
+        self.layout.addWidget(self.input_box)
+
+        # Breadcrumb
+        self.breadcrumb_label = QLabel()
+        self.layout.addWidget(self.breadcrumb_label)
+
+        # Add Buttons
+        self.button_layout = QHBoxLayout()
+        self.secondary_structure_button = QPushButton("Secondary Structure")
+        self.print_structure_button = QPushButton("Print Structure")
+        self.formatting_button = QPushButton("Formatting Rules")
+        self.button_layout.addWidget(self.secondary_structure_button)
+        self.button_layout.addWidget(self.formatting_button)
+        self.button_layout.addWidget(self.print_structure_button)
+        self.layout.addLayout(self.button_layout)
+
+        # Connect Buttons
+        self.print_structure_button.clicked.connect(self.print_structure)
+        self.secondary_structure_button.clicked.connect(self.open_secondary_structure_popup)
+        self.formatting_button.clicked.connect(self.open_formatting_popup)
+
+        # Folder List
+        self.folder_list = QListWidget()
+        self.folder_list.setSelectionMode(QListWidget.MultiSelection)
+        self.folder_list.itemDoubleClicked.connect(self.open_folder)
+        self.layout.addWidget(self.folder_list)
+
+        self.template_name = template_name
+        self.folder_structure = folder_structure
+        self.templates = templates
+        self.parent_window = parent_window
+        self.current_path = []
+        self.update_view()
+
+    def create_folders_from_input(self):
+        """Create folders based on user input."""
+        folder_names = self.input_box.toPlainText().splitlines()
+        if not folder_names:
+            QMessageBox.warning(self, "Error", "No folder names provided!")
+            return
+        current_location = self.get_current_location()
+        for name in folder_names:
+            name = name.strip()
+            if name and name not in current_location:
+                current_location[name] = {}
+        self.input_box.clear()
+        self.update_view()
+
+    def update_view(self):
+        """Update the folder view and breadcrumb."""
+        self.folder_list.clear()
+        current_location = self.get_current_location()
+        for folder in current_location:
+            self.folder_list.addItem(folder)
+
+        # Update breadcrumb
+        breadcrumb_parts = [self.template_name] + self.current_path
+        breadcrumb_html = " / ".join(
+            f"<a href='#' data-index='{i}'>{part}</a>"
+            for i, part in enumerate(breadcrumb_parts)
+        )
+        self.breadcrumb_label.setText(f"<html>{breadcrumb_html}</html>")
+        self.breadcrumb_label.setTextInteractionFlags(Qt.TextBrowserInteraction)
+        self.breadcrumb_label.linkActivated.connect(self.navigate_to_breadcrumb)
+
+    def navigate_to_breadcrumb(self, index):
+        """Navigate to a specific breadcrumb level."""
+        index = int(index)
+        self.current_path = self.current_path[:index]
+        self.update_view()
+
+    def get_current_location(self):
+        """Return the current folder location."""
+        location = self.folder_structure
+        for level in self.current_path:
+            location = location[level]
+        return location
+
+    def open_folder(self, item):
+        """Open a folder."""
+        folder_name = item.text()
+        current_location = self.get_current_location()
+        if folder_name in current_location:
+            self.current_path.append(folder_name)
+            self.update_view()
+
+    def print_structure(self):
+        """Export the folder structure to the downloads folder."""
+        target_dir = os.path.join(DOWNLOAD_DIR, self.template_name)
+        os.makedirs(target_dir, exist_ok=True)
+        self.create_folders_recursively(self.folder_structure, target_dir)
+        QMessageBox.information(self, "Success", f"Folders created in {target_dir}!")
+
+    def create_folders_recursively(self, structure, parent_path):
+        """Recursively create folders."""
+        for folder_name, subfolders in structure.items():
+            path = os.path.join(parent_path, folder_name)
+            os.makedirs(path, exist_ok=True)
+            if isinstance(subfolders, dict):
+                self.create_folders_recursively(subfolders, path)
+
+    def open_secondary_structure_popup(self):
+        """Open a popup for adding secondary structures."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Secondary Structure")
+        layout = QVBoxLayout(dialog)
+
+        # Template Selection
+        template_label = QLabel("Select a template:")
+        layout.addWidget(template_label)
+        template_dropdown = QListWidget()
+        template_dropdown.addItems(self.templates.keys())
+        layout.addWidget(template_dropdown)
+
+        # Paste Options
+        paste_options = QGroupBox("Paste Options")
+        paste_layout = QVBoxLayout(paste_options)
+        paste_at_current = QRadioButton("Paste at Current Level")
+        select_folders = QRadioButton("Select Specific Folders")
+        paste_layout.addWidget(paste_at_current)
+        paste_layout.addWidget(select_folders)
+        layout.addWidget(paste_options)
+
+        # Buttons
+        buttons = QDialogButtonBox(QDialogButtonBox.Ok | QDialogButtonBox.Cancel)
+        buttons.accepted.connect(dialog.accept)
+        buttons.rejected.connect(dialog.reject)
+        layout.addWidget(buttons)
+
+        def apply_secondary_structure():
+            selected_template = template_dropdown.currentItem().text()
+            if paste_at_current.isChecked():
+                self.integrate_secondary_structure(selected_template, paste_at_current=True)
+            elif select_folders.isChecked():
+                self.integrate_secondary_structure(selected_template, paste_at_current=False)
+            dialog.accept()
+
+        buttons.accepted.connect(apply_secondary_structure)
+        dialog.exec_()
+
+    def integrate_secondary_structure(self, selected_template, paste_at_current):
+        """Integrate a secondary structure."""
+        secondary_structure = self.templates[selected_template]
+        current_location = self.get_current_location()
+
+        if paste_at_current:
+            current_location.update(secondary_structure)
+        else:
+            QMessageBox.information(
+                self, "Secondary Structure", "Select folders for integration!"
+            )
+            # Logic for specific folder selection goes here.
+
+        self.update_view()
+
+    def open_formatting_popup(self):
+        """Open a popup for formatting rules."""
+        dialog = QDialog(self)
+        dialog.setWindowTitle("Formatting Rules")
+        layout = QVBoxLayout(dialog)
+
+        # Rules Management
+        rules_label = QLabel("Manage Formatting Rules:")
+        layout.addWidget(rules_label)
+
+        # Add and manage rules here
+        # Placeholder for formatting logic
+
+        dialog.exec_()
+
+    def return_to_templates(self, parent_window):
+        """Return to the template manager."""
+        self.save_structure()
+        self.close()
+        parent_window.show()
+
+    def save_structure(self):
+        """Save the folder structure."""
+        with open(os.path.join(TEMPLATE_DIR, f"{self.template_name}.json"), "w") as f:
+            json.dump(self.folder_structure, f, indent=4)
+
+
+if __name__ == "__main__":
+    app = QApplication(sys.argv)
+    window = TemplateManager()
+    window.show()
+    sys.exit(app.exec_())
