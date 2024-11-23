@@ -1,0 +1,421 @@
+import os
+import json
+from pathlib import Path
+
+
+class FormattingRule:
+    def __init__(self, rule_type, target_phrase, replacement_phrase=None):
+        self.rule_type = rule_type
+        self.target_phrase = target_phrase
+        self.replacement_phrase = replacement_phrase
+        self.enabled = True
+
+    def apply(self, name):
+        if not self.enabled:
+            return name
+        if self.rule_type == 'delete':
+            return name.replace(self.target_phrase, '')
+        elif self.rule_type == 'replace':
+            return name.replace(self.target_phrase, self.replacement_phrase)
+        return name
+
+    def __str__(self):
+        status = "enabled" if self.enabled else "disabled"
+        if self.rule_type == 'delete':
+            return f"Delete '{self.target_phrase}' ({status})"
+        elif self.rule_type == 'replace':
+            return f"Replace '{self.target_phrase}' with '{self.replacement_phrase}' ({status})"
+
+
+class Template:
+    def __init__(self, name):
+        self.name = name
+        self.root_folder = {}
+        self.current_path = []
+        self.formatting_rules = []
+
+    def create_folders(self, folder_names):
+        """Create multiple folders at the current path."""
+        current = self._navigate_to_path(self.current_path)
+        for folder_name in folder_names.splitlines():
+            folder_name = folder_name.strip()
+            if folder_name in current:
+                raise ValueError(f"Folder '{folder_name}' already exists.")
+            current[folder_name] = {}
+
+    def delete_folder(self, folder_name):
+        """Delete a folder in the current path."""
+        current = self._navigate_to_path(self.current_path)
+        if folder_name not in current:
+            raise ValueError(f"Folder '{folder_name}' does not exist.")
+        del current[folder_name]
+
+    def rename_folder(self, old_name, new_name):
+        """Rename a folder in the current path."""
+        current = self._navigate_to_path(self.current_path)
+        if old_name not in current:
+            raise ValueError(f"Folder '{old_name}' does not exist.")
+        if new_name in current:
+            raise ValueError(f"Folder '{new_name}' already exists.")
+        current[new_name] = current.pop(old_name)
+
+    def navigate_to_folder(self, folder_name):
+        """Navigate into a folder."""
+        current = self._navigate_to_path(self.current_path)
+        if folder_name not in current or not isinstance(current[folder_name], dict):
+            raise ValueError(f"Folder '{folder_name}' does not exist or is not a folder.")
+        self.current_path.append(folder_name)
+
+    def navigate_up(self):
+        """Navigate up to the parent folder."""
+        if not self.current_path:
+            raise ValueError("Already at the root folder.")
+        self.current_path.pop()
+
+    def _navigate_to_path(self, path):
+        """Internal method to traverse the folder structure."""
+        folder = self.root_folder
+        for p in path:
+            if not isinstance(folder, dict) or p not in folder:
+                raise ValueError(f"Path '{'/'.join(path)}' does not exist.")
+            folder = folder[p]
+        return folder
+
+    def list_current_folders(self):
+        """List folders in the current path."""
+        current = self._navigate_to_path(self.current_path)
+        if not isinstance(current, dict):
+            raise ValueError("Current path is not a folder.")
+        return [self.apply_formatting_rules(name) for name in current.keys()]
+
+    def apply_formatting_rules(self, name):
+        """Apply all enabled formatting rules to a folder name."""
+        for rule in self.formatting_rules:
+            name = rule.apply(name)
+        return name
+
+    def save(self):
+        """Save the folder structure to a JSON file."""
+        templates_dir = Path("templates")
+        templates_dir.mkdir(exist_ok=True)
+        with open(templates_dir / f'{self.name}.json', 'w') as f:
+            json.dump(self.root_folder, f, indent=4)
+
+    def save_to_downloads(self):
+        """Save the folder structure to the Downloads folder."""
+        downloads_path = os.path.join(Path.home(), "Downloads", self.name)
+        self.generate_folders(downloads_path)
+        print(f"Folder structure saved to {downloads_path}")
+
+    @classmethod
+    def load(cls, name):
+        """Load a folder structure from a JSON file."""
+        templates_dir = Path("templates")
+        with open(templates_dir / f'{name}.json', 'r') as f:
+            root_folder = json.load(f)
+        template = cls(name)
+        template.root_folder = root_folder
+        return template
+
+    def copy_structure(self, source_structure, target_path):
+        """Copy a folder structure into the current template."""
+        current = self._navigate_to_path(target_path)
+
+        # Check for circular reference
+        if source_structure is self.root_folder:
+            source_path = "/".join(target_path)
+            raise ValueError(f"Cannot paste structure into itself: {source_path}")
+
+        for folder_name, subfolders in source_structure.items():
+            if folder_name not in current:
+                current[folder_name] = {}
+            self._copy_structure_recursively(subfolders, current[folder_name])
+
+    def _copy_structure_recursively(self, source, target, visited_paths=None):
+        """Recursive helper to copy folder structures."""
+        if visited_paths is None:
+            visited_paths = set()
+
+        # Ensure the source is not already in visited paths to prevent circular references
+        source_id = id(source)
+        if source_id in visited_paths:
+            raise ValueError("Circular reference detected during copy operation.")
+        visited_paths.add(source_id)
+
+        if isinstance(source, dict):
+            for folder_name, subfolders in source.items():
+                if folder_name not in target:
+                    target[folder_name] = {}
+                self._copy_structure_recursively(subfolders, target[folder_name], visited_paths)
+        elif isinstance(source, list):
+            for item in source:
+                if isinstance(item, dict):
+                    for folder_name, subfolders in item.items():
+                        if folder_name not in target:
+                            target[folder_name] = {}
+                        self._copy_structure_recursively(subfolders, target[folder_name], visited_paths)
+
+        # Remove current source from visited paths to avoid affecting other operations
+        visited_paths.remove(source_id)
+
+    def generate_folders(self, root_path):
+        """Generate an actual folder structure from the template."""
+        def create_structure(current_structure, current_path):
+            for folder_name, subfolders in current_structure.items():
+                folder_path = os.path.join(current_path, folder_name)
+                os.makedirs(folder_path, exist_ok=True)
+                create_structure(subfolders, folder_path)
+
+        create_structure(self.root_folder, root_path)
+        print(f"Folder structure generated at: {root_path}")
+
+    def add_formatting_rule(self, rule_type, target_phrase, replacement_phrase=None):
+        """Add a new formatting rule."""
+        rule = FormattingRule(rule_type, target_phrase, replacement_phrase)
+        self.formatting_rules.append(rule)
+
+    def delete_formatting_rule(self, index):
+        """Delete a formatting rule by index."""
+        if 0 <= index < len(self.formatting_rules):
+            del self.formatting_rules[index]
+        else:
+            raise ValueError("Invalid rule index")
+
+    def toggle_formatting_rule(self, index):
+        """Toggle the enabled state of a formatting rule by index."""
+        if 0 <= index < len(self.formatting_rules):
+            self.formatting_rules[index].enabled = not self.formatting_rules[index].enabled
+        else:
+            raise ValueError("Invalid rule index")
+
+
+class TemplateManager:
+    def __init__(self):
+        self.templates = {}
+
+    def create_template(self, name):
+        if name in self.templates:
+            raise ValueError(f"Template '{name}' already exists.")
+        template = Template(name)
+        template.save()
+        self.templates[name] = template
+        return template
+
+    def delete_template(self, name):
+        templates_dir = Path("templates")
+        template_path = templates_dir / f"{name}.json"
+
+        # Check if the template exists in the manager
+        if name not in self.templates:
+            try:
+                self.load_template(name)
+            except Exception as e:
+                raise ValueError(f"Template '{name}' does not exist in memory and could not be loaded: {e}")
+
+        # Check if the file exists before attempting deletion
+        if not template_path.exists():
+            raise ValueError(f"Template file '{template_path}' does not exist on disk.")
+
+        # Attempt to delete the file
+        try:
+            template_path.unlink()  # Deletes the file
+            del self.templates[name]  # Remove from in-memory state
+            print(f"Template '{name}' successfully deleted.")
+        except Exception as e:
+            raise ValueError(f"Error deleting template '{name}': {e}")
+
+    def load_template(self, name):
+        if name in self.templates:
+            return self.templates[name]
+        template = Template.load(name)
+        self.templates[name] = template
+        return template
+
+    def list_templates(self):
+        templates_dir = Path("templates")
+        templates_dir.mkdir(exist_ok=True)
+        return [file.stem for file in templates_dir.glob("*.json")]
+
+    def integrate_secondary_structure(self, current_template):
+        print("\nAvailable Templates:")
+        templates = self.list_templates()
+        for i, name in enumerate(templates, start=1):
+            print(f"{i}. {name}")
+        try:
+            choice = int(input("Enter the number of the template to load as secondary structure: ")) - 1
+            if 0 <= choice < len(templates):
+                secondary_template = self.load_template(templates[choice])
+                print(f"Secondary structure '{secondary_template.name}' loaded.")
+                print("\nChoose paste location:")
+                print("1. Select folders by number")
+                print("2. Paste at the current level")
+                paste_choice = input("Enter your choice: ").strip()
+                if paste_choice == '1':
+                    folders = current_template.list_current_folders()
+                    print("\nFolders in current path:")
+                    for i, folder in enumerate(folders, start=1):
+                        print(f"{i}. {folder}")
+                    selected = input("Enter folder numbers (comma-separated): ").strip()
+                    selected_indices = [int(x) - 1 for x in selected.split(",") if x.isdigit()]
+                    for idx in selected_indices:
+                        if 0 <= idx < len(folders):
+                            folder_name = folders[idx]
+                            target_path = current_template.current_path + [folder_name]
+                            current_template.copy_structure(secondary_template.root_folder, target_path)
+                            print(f"Secondary structure pasted into '{folder_name}'.")
+                elif paste_choice == '2':
+                    current_template.copy_structure(secondary_template.root_folder, current_template.current_path)
+                    print("Secondary structure pasted at the current level.")
+                else:
+                    print("Invalid choice.")
+            else:
+                print("Invalid template selection.")
+        except ValueError as e:
+            print(f"Error: {e}")
+
+
+def display_folder_commands(template_name, current_path, folders):
+    breadcrumb = f"{template_name}/" + "/".join(current_path) if current_path else template_name
+    print("\nFolder Structure Navigation Commands:")
+    print("1. create_folders")
+    print("2. delete_folder")
+    print("3. open_folder")
+    print("4. navigate_up")
+    print("5. rename_folder")
+    print("6. save")
+    print("7. print_structure")
+    print("8. secondary_structure")
+    print("9. formatting")
+    print("10. exit")
+
+    print("\nFolders in current path:")
+    for i, folder in enumerate(folders, start=1):
+        print(f"{i}. {folder}")
+
+    print(f"\nCurrent Directory: {breadcrumb}")
+
+
+def display_formatting_menu():
+    print("\nFormatting Commands:")
+    print("1. Add Rule")
+    print("2. Delete Rule")
+    print("3. Manage Rules")
+    print("4. Back")
+
+
+def main():
+    manager = TemplateManager()
+    current_template = None
+
+    while True:
+        if current_template:
+            folders = current_template.list_current_folders()
+            display_folder_commands(current_template.name, current_template.current_path, folders)
+        else:
+            print("\nTemplate Management Commands:")
+            print("1. create_template <name>")
+            print("2. delete_template")
+            print("3. load_template")
+            print("4. exit")
+
+        command = input("\nEnter command: ").strip()
+        if not command:
+            continue
+
+        parts = command.split()
+        cmd = parts[0]
+        args = parts[1:]
+
+        try:
+            if not current_template:
+                if cmd == '1':
+                    name = args[0] if args else input("Enter template name: ").strip()
+                    manager.create_template(name)
+                    print(f"Template '{name}' created and saved.")
+                elif cmd == '2':
+                    print("\nAvailable Templates:")
+                    for i, name in enumerate(manager.list_templates(), start=1):
+                        print(f"{i}. {name}")
+                    choice = int(input("Enter the number of the template to delete: ")) - 1
+                    if 0 <= choice < len(manager.list_templates()):
+                        manager.delete_template(manager.list_templates()[choice])
+                        print("Template deleted.")
+                elif cmd == '3':
+                    print("\nAvailable Templates:")
+                    for i, name in enumerate(manager.list_templates(), start=1):
+                        print(f"{i}. {name}")
+                    choice = int(input("Enter the number of the template to load: ")) - 1
+                    if 0 <= choice < len(manager.list_templates()):
+                        current_template = manager.load_template(manager.list_templates()[choice])
+                        print(f"Template '{current_template.name}' loaded.")
+                elif cmd == '4':
+                    print("Exiting...")
+                    break
+            else:
+                if cmd == '1' or cmd == 'create_folders':
+                    folder_names = input("Enter folder names (each on a new line): ").strip()
+                    current_template.create_folders(folder_names)
+                elif cmd == '2' or cmd == 'delete_folder':
+                    folder_name = input("Enter the folder name: ").strip()
+                    current_template.delete_folder(folder_name)
+                elif cmd == '3' or cmd == 'open_folder':
+                    folders = current_template.list_current_folders()
+                    print("\nFolders in current path:")
+                    for i, folder in enumerate(folders, start=1):
+                        print(f"{i}. {folder}")
+                    choice = int(input("Enter the number of the folder to open: ")) - 1
+                    if 0 <= choice < len(folders):
+                        current_template.navigate_to_folder(folders[choice])
+                        print(f"Opened folder '{folders[choice]}'.")
+                elif cmd == '4' or cmd == 'navigate_up':
+                    current_template.navigate_up()
+                elif cmd == '5' or cmd == 'rename_folder':
+                    old_name = input("Enter the folder name to rename: ").strip()
+                    new_name = input("Enter the new folder name: ").strip()
+                    current_template.rename_folder(old_name, new_name)
+                    print(f"Folder '{old_name}' renamed to '{new_name}'.")
+                elif cmd == '6' or cmd == 'save':
+                    current_template.save()
+                    print(f"Template '{current_template.name}' saved.")
+                elif cmd == '7' or cmd == 'print_structure':
+                    print(json.dumps(current_template.root_folder, indent=4))
+                    current_template.save_to_downloads()
+                elif cmd == '8' or cmd == 'secondary_structure':
+                    manager.integrate_secondary_structure(current_template)
+                elif cmd == '9' or cmd == 'formatting':
+                    while True:
+                        display_formatting_menu()
+                        formatting_command = input("\nEnter command: ").strip()
+                        if formatting_command == '1':
+                            rule_type = input("Enter rule type (delete/replace): ").strip()
+                            target_phrase = input("Enter the target phrase: ").strip()
+                            replacement_phrase = None
+                            if rule_type == 'replace':
+                                replacement_phrase = input("Enter the replacement phrase: ").strip()
+                            current_template.add_formatting_rule(rule_type, target_phrase, replacement_phrase)
+                            print("Formatting rule added.")
+                        elif formatting_command == '2':
+                            for i, rule in enumerate(current_template.formatting_rules, start=1):
+                                print(f"{i}. {rule}")
+                            rule_index = int(input("Enter the number of the rule to delete: ")) - 1
+                            current_template.delete_formatting_rule(rule_index)
+                            print("Formatting rule deleted.")
+                        elif formatting_command == '3':
+                            for i, rule in enumerate(current_template.formatting_rules, start=1):
+                                print(f"{i}. {rule}")
+                            rule_index = int(input("Enter the number of the rule to toggle: ")) - 1
+                            current_template.toggle_formatting_rule(rule_index)
+                            print("Formatting rule toggled.")
+                        elif formatting_command == '4':
+                            break
+                        else:
+                            print("Invalid command.")
+                elif cmd == '10' or cmd == 'exit':
+                    current_template = None
+                    print("Exiting folder navigation mode.")
+        except (ValueError, IndexError) as e:
+            print(f"Error: {e}")
+
+
+if __name__ == "__main__":
+    main()
